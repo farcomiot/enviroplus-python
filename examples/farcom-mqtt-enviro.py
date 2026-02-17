@@ -198,106 +198,6 @@ cpu_temps = [25.0] * CPU_TEMP_SAMPLES
 # MQTT connection flag (updated by callbacks)
 mqtt_connected = False
 # Noise events log (in-memory, last 100)
-noise_events = []
-# QR code image cache (generated once on first use)
-qr_image_cache = None
-# External IP cache (updated by background thread)
-ext_ip_cache = "..."
-# History publish timer
-last_history_publish = 0.0
-# WiFi SSID cache (updated periodically)
-wifi_ssid_cache = "..."
-wifi_ssid_last  = 0.0
-# =============================================================================
-# SECTION 7: HELPER / UTILITY FUNCTIONS
-# =============================================================================
-def get_cpu_temperature():
-    """Read CPU temperature via sysfs (no subprocess, fast)."""
-    try:
-        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-            return int(f.read()) / 1000.0
-    except Exception:
-        return 0.0
-def get_local_ip():
-    """Get local IP via UDP socket trick (no shell commands)."""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(1)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "?.?.?.?"
-def get_wifi_ssid():
-    """Get current WiFi SSID via nmcli (Bookworm NetworkManager)."""
-    global wifi_ssid_cache, wifi_ssid_last
-    now = time.time()
-    if now - wifi_ssid_last < 30:
-        return wifi_ssid_cache
-    try:
-        result = subprocess.run(
-            ["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"],
-            capture_output=True, text=True, timeout=3,
-        )
-        for line in result.stdout.splitlines():
-            if line.startswith("yes:"):
-                wifi_ssid_cache = line.split(":", 1)[1].strip()
-                wifi_ssid_last = now
-                return wifi_ssid_cache
-    except Exception:
-        pass
-    wifi_ssid_cache = "N/A"
-    wifi_ssid_last = now
-    return wifi_ssid_cache
-def get_external_ip():
-    """Fetch external IP from ipify (blocking — use in background thread)."""
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "--max-time", "5", "https://api.ipify.org"],
-            capture_output=True, text=True, timeout=8,
-        )
-        return result.stdout.strip() if result.stdout.strip() else "?.?.?.?"
-    except Exception:
-        return "?.?.?.?"
-def _ext_ip_thread_fn():
-    """Background daemon thread: refresh external IP every 10 minutes."""
-    global ext_ip_cache
-    while True:
-        ext_ip_cache = get_external_ip()
-        time.sleep(600)
-def amp_to_db(amp):
-    """Convert ICS-43432 noise amplitude to approximate dB SPL."""
-    if amp <= 0:
-        return 0.0
-    return max(0.0, 20.0 * math.log10(amp * 64.0 + 1.0))
-def is_night_watch():
-    """Return True if current hour is within night watch window."""
-    hour = datetime.now().hour
-    return hour >= NIGHT_START or hour < NIGHT_END
-def format_uptime(start_ts):
-    """Return human-readable uptime from Unix timestamp."""
-    secs = int(time.time() - start_ts)
-    h, rem = divmod(secs, 3600)
-    m, s = divmod(rem, 60)
-    return "{}h {}m {}s".format(h, m, s)
-def check_ssh_listening():
-    """Return True if SSH port 22 is open locally."""
-    try:
-        s = socket.socket()
-        s.settimeout(0.3)
-        s.connect(("127.0.0.1", 22))
-        s.close()
-        return True
-    except Exception:
-        return False
-def get_ram_info():
-    """Return (used_mb, total_mb) from /proc/meminfo."""
-    try:
-        with open("/proc/meminfo", "r") as f:
-            lines = f.readlines()
-        mem = {}
-        for line in lines:
             parts = line.split()
             if len(parts) >= 2:
                 mem[parts[0].rstrip(":")] = int(parts[1])
@@ -308,8 +208,7 @@ def get_ram_info():
     except Exception:
         return (0, 1)
 def get_disk_percent():
-    """Return disk usage percentage for /."""
-    try:
+    """Return disk usage percentage for /."""    try:
         st = os.statvfs("/")
         total = st.f_blocks * st.f_frsize
         free = st.f_bfree * st.f_frsize
@@ -401,6 +300,107 @@ def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
     global mqtt_connected
     mqtt_connected = False
     log.warning("MQTT disconnected: reason=%s", reason_code)
+def on_publish(client, userdata, mid, reason_codes, properties):
+    """paho-mqtt v2 callback: message published."""
+    pass
+def mqtt_init():
+    """Create paho-mqtt v2 client and connect (non-blocking loop_start)."""
+    client = mqtt.Client(
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        client_id=DEVICE_ID,
+    )
+    client.on_connect    = on_connect
+    client.on_disconnect = on_disconnect
+    client.on_publish    = on_publish
+    try:
+        client.connect(BROKER, PORT, keepalive=60)
+        client.loop_start()
+    except Exception as e:
+        log.error("MQTT connect error: %s", e)
+    return client
+def mqtt_publish_data(client, payload_dict):
+    """Publish sensor data to farcom/enviro (QoS 1, not retained)."""
+    try:
+        payload = json.dumps(payload_dict)
+        client.publish(TOPIC, payload, qos=MQTT_QOS, retain=False)
+        log.debug("Published: %s", payload[:120])
+    except Exception as e:
+        log.warning("MQTT publish error: %s", e)
+def mqtt_publish_history(client, payload_dict):
+    """Publish retained time-series history to farcom/enviro/history.
+
+    Dashboard expects: {t0, sensors: {key: [[offset_s, avg, min, max], ...]}, events: [...]}
+    Aggregates SQLite data into 1-minute buckets over the last 24 hours.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cols = ["noise", "temperature", "pressure", "humidity", "light",
+                "oxidised", "reduced", "nh3", "pm1", "pm25", "pm10"]
+        rows = conn.execute("""
+            SELECT strftime('%s', timestamp) as ts,
+                   noise, temperature, pressure, humidity, light,
+                   oxidised, reduced, nh3, pm1, pm25, pm10
+            FROM sensor_data
+            ORDER BY timestamp ASC
+        """).fetchall()
+        conn.close()
+        if not rows:
+            log.info("History: no data in SQLite, skipping")
+            return
+        t0 = int(rows[0][0])
+        buckets = {}
+        for row in rows:
+            ts = int(row[0])
+            minute_offset = (ts - t0) // 60
+            if minute_offset not in buckets:
+                buckets[minute_offset] = {c: [] for c in cols}
+            for i, col in enumerate(cols):
+                val = row[i + 1]
+                if val is not None:
+                    buckets[minute_offset][col].append(float(val))
+        sensors = {}
+        for col in cols:
+            series = []
+            for minute_off in sorted(buckets.keys()):
+                vals = buckets[minute_off].get(col, [])
+                if vals:
+                    avg_v = round(sum(vals) / len(vals), 2)
+                    min_v = round(min(vals), 2)
+                    max_v = round(max(vals), 2)
+                    series.append([minute_off * 60, avg_v, min_v, max_v])
+            if series:
+                sensors[col] = series
+        # Noise events
+        events = []
+        for ev in noise_events[-100:]:
+            events.append({
+                "ts": int(ev.get("ts", 0)),
+                "peak": ev.get("peak", 0),
+                "class": ev.get("cls", "unknown"),
+            })
+        history = {
+            "t0": t0,
+            "sensors": sensors,
+            "events": events,
+        }
+        payload_str = json.dumps(history)
+        client.publish(TOPIC_HISTORY, payload_str, qos=MQTT_QOS, retain=True)
+        log.info(
+            "History published: %d sensors, %d minutes, %d events, %d bytes",
+            len(sensors), len(buckets), len(events), len(payload_str),
+        )
+    except Exception as e:
+        log.warning("MQTT history publish error: %s", e)
+# =============================================================================
+# SECTION 10: SENSOR READING FUNCTIONS
+# =============================================================================
+def read_temperature():
+    """BME280 temperature with CPU heat compensation."""
+    global cpu_temps
+    cpu_temps = cpu_temps[1:] + [get_cpu_temperature()]
+    global mqtt_connected
+    mqtt_connected = False
+    log.warning("MQTT disconnected: reason=%s", reason_code)
 def on_publish(client, userdata, mid, reason_code, properties):
     """paho-mqtt v2 callback: message published."""
     pass  # silent — logged elsewhere
@@ -413,6 +413,7 @@ def mqtt_init():
     client.on_connect    = on_connect
     client.on_disconnect = on_disconnect
     client.on_publish    = on_publish
+    client.reconnect_delay_set(min_delay=1, max_delay=60)
     try:
         client.connect(BROKER, PORT, keepalive=60)
     except Exception as e:
@@ -426,15 +427,67 @@ def mqtt_publish_data(client, payload_dict):
     except Exception as e:
         log.warning("MQTT publish error: %s", e)
 def mqtt_publish_history(client, payload_dict):
-    """Publish retained snapshot to farcom/enviro/history."""
+    """Publish retained time-series history to farcom/enviro/history.
+
+    Dashboard expects: {t0, sensors: {key: [[offset_s, avg, min, max], ...]}, events: [...]}
+    Aggregates SQLite data into 1-minute buckets over the last 24 hours.
+    """
     try:
+        conn = sqlite3.connect(DB_PATH)
+        # Query aggregated 1-minute buckets for each sensor
+        cols = ["noise", "temperature", "pressure", "humidity", "light",
+                "oxidised", "reduced", "nh3", "pm1", "pm25", "pm10"]
+        # Get data from last 24h grouped into 1-minute intervals
+        rows = conn.execute("""
+            SELECT strftime('%s', timestamp) as ts,
+                   noise, temperature, pressure, humidity, light,
+                   oxidised, reduced, nh3, pm1, pm25, pm10
+            FROM sensor_data
+            ORDER BY timestamp ASC
+        """).fetchall()
+        conn.close()
+        if not rows:
+            log.info("History: no data in SQLite, skipping")
+            return
+        # Build 1-minute aggregated buckets
+        t0 = int(rows[0][0])  # earliest timestamp as base
+        buckets = {}  # {minute_offset: {col: [values]}}
+        for row in rows:
+            ts = int(row[0])
+            minute_offset = (ts - t0) // 60
+            if minute_offset not in buckets:
+                buckets[minute_offset] = {c: [] for c in cols}
+            for i, col in enumerate(cols):
+                val = row[i + 1]
+                if val is not None:
+                    buckets[minute_offset][col].append(float(val))
+        # Build sensors dict: {key: [[offset_s, avg, min, max], ...]}
+        sensors = {}
+        for col in cols:
+            series = []
+            for minute_off in sorted(buckets.keys()):
+                vals = buckets[minute_off].get(col, [])
+                if vals:
+                    avg_v = round(sum(vals) / len(vals), 2)
+                    min_v = round(min(vals), 2)
+                    max_v = round(max(vals), 2)
+                    series.append([minute_off * 60, avg_v, min_v, max_v])
+            if series:
+                sensors[col] = series
+        # Build noise events from in-memory log
+        events = []
+        for ev in noise_events[-100:]:
+            events.append({"ts": int(ev.get("ts", 0)), "peak": ev.get("peak", 0),
+                           "class": ev.get("cls", "unknown")})
         history = {
-            "timestamp": datetime.now().isoformat(),
-            "snapshot": payload_dict,
-            "rows": db_row_count(),
+            "t0": t0,
+            "sensors": sensors,
+            "events": events,
         }
-        client.publish(TOPIC_HISTORY, json.dumps(history), qos=MQTT_QOS, retain=True)
-        log.info("History published (%d rows in DB)", history["rows"])
+        payload_str = json.dumps(history)
+        client.publish(TOPIC_HISTORY, payload_str, qos=MQTT_QOS, retain=True)
+        log.info("History published: %d sensors, %d minutes, %d events, %d bytes",
+                 len(sensors), len(buckets), len(events), len(payload_str))
     except Exception as e:
         log.warning("MQTT history publish error: %s", e)
 # =============================================================================
@@ -831,4 +884,3 @@ def main():
         log.info("farcom-mqtt-enviro.py stopped cleanly")
 if __name__ == "__main__":
     main()
-
