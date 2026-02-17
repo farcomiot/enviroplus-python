@@ -1,3 +1,50 @@
+# Farcom Industrial — Enviro+ IoT Monitor
+
+> **Fork maintained by [Farcom Industrial](https://farcomindustrial.com)** for production environmental monitoring in Monterrey, Mexico.
+
+## Live Dashboard
+
+**[farcomindustrial.com/enviropi](https://farcomindustrial.com/enviropi/)** — Real-time sensor data via MQTT over WebSocket.
+
+## What This Fork Adds
+
+| Feature | Description |
+|---------|-------------|
+| **farcom-mqtt-enviro.py** | 886-line production script with 11-sensor MQTT publishing, LCD display (14 modes), SQLite logging, noise event detection |
+| **Live Dashboard** | WordPress-hosted real-time dashboard with sparklines, gauges, history charts, and map |
+| **MQTT History** | 1-minute aggregated time-series data (avg/min/max) published as retained message for instant dashboard hydration |
+| **Noise Monitoring** | ICS-43432 microphone with dB SPL conversion, night watch mode (22:00-07:00), event logging |
+| **LCD Modes** | 14 display modes: 11 sensor bar graphs + info screen (QR/status) + logo + system health |
+| **systemd Service** | Runs as `farcom-enviro.service` with auto-restart on failure |
+
+## Documentation
+
+- **[docs/README-FARCOM.md](docs/README-FARCOM.md)** — Complete system documentation (architecture, MQTT schema, deployment)
+- **[docs/CHANGELOG.md](docs/CHANGELOG.md)** — Version history and change log
+- **[docs/CREDENTIALS.md](docs/CREDENTIALS.md)** — Credential reference map (no secrets)
+- **[docs/SSH-DIAGNOSTICS.md](docs/SSH-DIAGNOSTICS.md)** — Remote diagnostic commands
+
+## Quick Start (Pi)
+
+```bash
+# Clone and deploy
+git clone https://github.com/farcomiot/enviroplus-python.git
+cd enviroplus-python/examples
+sudo systemctl stop farcom-enviro.service
+sudo cp farcom-mqtt-enviro.py /home/enviropi/enviroplus-python/examples/
+sudo systemctl start farcom-enviro.service
+```
+
+## Roadmap
+
+See [Issues](https://github.com/farcomiot/enviroplus-python/issues) for the development roadmap (Issues #1-#8).
+
+---
+
+*Below is the original Pimoroni Enviro+ README:*
+
+---
+
 # Enviro+
 
 Designed for environmental monitoring, Enviro+ lets you measure air quality (pollutant gases and particulates), temperature, pressure, humidity, light, and noise level. Learn more - https://shop.pimoroni.com/products/enviro-plus
