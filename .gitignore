@@ -19,3 +19,10 @@ library/debian/
 .pytest_cache
 .tox
 .vscode/
+
+# Farcom Industrial additions
+*.db
+*.log
+.env
+.env.*
+*.bak
