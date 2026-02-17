@@ -97,7 +97,8 @@ DASHBOARD_URL    = "https://farcomindustrial.com/enviropi"
 SPLASH_SECONDS   = 4
 # LCD modes
 NUM_SENSOR_MODES = 11
-MODE_INFO        = 11MODE_LOGO        = 12
+MODE_INFO        = 11
+MODE_LOGO        = 12
 MODE_HEALTH      = 13
 NUM_MODES        = 14
 def get_serial_number():
@@ -196,7 +197,8 @@ values = {v: [1.0] * NUM_BARS for v in variables}
 cpu_temps = [25.0] * CPU_TEMP_SAMPLES
 # MQTT connection flag (updated by callbacks)
 mqtt_connected = False
-# Noise events log (in-memory, last 100)noise_events = []
+# Noise events log (in-memory, last 100)
+noise_events = []
 # QR code image cache (generated once on first use)
 qr_image_cache = None
 # External IP cache (updated by background thread)
@@ -295,7 +297,8 @@ def get_ram_info():
         with open("/proc/meminfo", "r") as f:
             lines = f.readlines()
         mem = {}
-        for line in lines:            parts = line.split()
+        for line in lines:
+            parts = line.split()
             if len(parts) >= 2:
                 mem[parts[0].rstrip(":")] = int(parts[1])
         total = mem.get("MemTotal", 1)
@@ -394,7 +397,8 @@ def on_connect(client, userdata, flags, reason_code, properties):
         mqtt_connected = False
         log.warning("MQTT connect failed: reason=%s", reason_code)
 def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
-    """paho-mqtt v2 callback: disconnected."""    global mqtt_connected
+    """paho-mqtt v2 callback: disconnected."""
+    global mqtt_connected
     mqtt_connected = False
     log.warning("MQTT disconnected: reason=%s", reason_code)
 def on_publish(client, userdata, mid, reason_code, properties):
@@ -493,7 +497,8 @@ def read_temperature():
     """BME280 temperature with CPU heat compensation (5-sample rolling avg)."""
     global cpu_temps
     cpu_t = get_cpu_temperature()
-    cpu_temps = cpu_temps[1:] + [cpu_t]    avg_cpu = sum(cpu_temps) / len(cpu_temps)
+    cpu_temps = cpu_temps[1:] + [cpu_t]
+    avg_cpu = sum(cpu_temps) / len(cpu_temps)
     raw = bme280.get_temperature()
     return raw - ((avg_cpu - raw) / TEMP_COMP_FACTOR)
 def read_pressure():
@@ -592,7 +597,8 @@ def check_noise_event(db_value):
 def lcd_generate_qr():
     """Generate QR code image once and cache it. Returns PIL Image or None."""
     global qr_image_cache
-    if qr_image_cache is not None:        return qr_image_cache
+    if qr_image_cache is not None:
+        return qr_image_cache
     if qrcode is None:
         return None
     qr = qrcode.QRCode(
@@ -691,7 +697,8 @@ def lcd_logo_screen():
     # Brand text
     draw.text((4, 2),  "FARCOM",      font=font_large, fill=(0, 200, 255))
     draw.text((4, 28), "Industrial",  font=font_large, fill=(255, 255, 255))
-    draw.text((4, 52), "Enviro+ Monitor", font=font_small, fill=(150, 150, 150))    draw.text((4, 64), "farcomindustrial.com", font=font_tiny, fill=(100, 100, 100))
+    draw.text((4, 52), "Enviro+ Monitor", font=font_small, fill=(150, 150, 150))
+    draw.text((4, 64), "farcomindustrial.com", font=font_tiny, fill=(100, 100, 100))
     disp.display(img)
 # --- Mode 13: Health screen (system stats) ---
 def lcd_health_screen():
@@ -790,7 +797,8 @@ def main():
     ext_ip_cache = get_external_ip()
     log.info("External IP: %s", ext_ip_cache)
     ip_thread = threading.Thread(target=_ext_ip_thread_fn, daemon=True)
-    ip_thread.start()    # 5. Main loop timing
+    ip_thread.start()
+    # 5. Main loop timing
     last_publish = 0.0
     loop_count   = 0
     log.info("Entering main loop. Ctrl+C to exit.")
