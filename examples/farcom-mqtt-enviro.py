@@ -782,7 +782,9 @@ def main():
                 # Build full MQTT payload (sensor data + metadata)
                 payload = dict(sensor_data)
                 payload["mqtt_connected"] = mqtt_connected
+                payload["device_id"]      = DEVICE_ID
                 payload["uptime_start"]   = UPTIME_START
+                payload["uptime_s"]       = int(time.time() - UPTIME_START)
                 # MQTT publish
                 mqtt_publish_data(mqtt_client, payload)
                 # SQLite insert
